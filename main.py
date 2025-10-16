@@ -212,9 +212,10 @@ async def doubao_image_generation():
         print(f"  语言: {fingerprint['locale']}")
         print(f"  时区: {fingerprint['timezone_id']}")
         
-        # 创建带有指纹信息的浏览器上下文，不指定viewport以允许窗口最大化
+        # 创建带有指纹信息的浏览器上下文，直接设置最大化视口
         context = await browser.new_context(
             user_agent=fingerprint['user_agent'],
+            viewport={"width": 1920, "height": 1080},  # 直接设置最大化视口
             device_scale_factor=fingerprint['device_scale_factor'],
             is_mobile=fingerprint['is_mobile'],
             has_touch=fingerprint['has_touch'],
@@ -238,22 +239,6 @@ async def doubao_image_generation():
             
             # 等待页面加载完成
             await page.wait_for_load_state('networkidle')
-            
-            # 最大化浏览器窗口
-            await page.evaluate('''() => {
-                if (document.documentElement.requestFullscreen) {
-                    document.documentElement.requestFullscreen();
-                } else if (document.documentElement.mozRequestFullScreen) {
-                    document.documentElement.mozRequestFullScreen();
-                } else if (document.documentElement.webkitRequestFullscreen) {
-                    document.documentElement.webkitRequestFullscreen();
-                } else if (document.documentElement.msRequestFullscreen) {
-                    document.documentElement.msRequestFullscreen();
-                }
-            }''')
-            
-            # 或者使用更简单的方式最大化窗口
-            # await page.set_viewport_size({"width": page.viewport_size["width"], "height": page.viewport_size["height"]})
             
             # 显示当前页面信息
             print(f"当前URL: {page.url}")
