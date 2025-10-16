@@ -1,6 +1,106 @@
 import asyncio
 import random
+import os
+import json
 from playwright.async_api import async_playwright
+from urllib.parse import urljoin
+
+
+class RC4Cipher:
+    """RC4加密解密类"""
+    
+    def __init__(self, key):
+        self.key = key.encode('utf-8') if isinstance(key, str) else key
+    
+    def _keystream(self, key):
+        """生成密钥流"""
+        S = list(range(256))
+        j = 0
+        for i in range(256):
+            j = (j + S[i] + key[i % len(key)]) % 256
+            S[i], S[j] = S[j], S[i]
+        i = j = 0
+        while True:
+            i = (i + 1) % 256
+            j = (j + S[i]) % 256
+            S[i], S[j] = S[j], S[i]
+            yield S[(S[i] + S[j]) % 256]
+    
+    def encrypt(self, data):
+        """加密数据"""
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        keystream = self._keystream(self.key)
+        encrypted = bytes([byte ^ next(keystream) for byte in data])
+        return encrypted
+    
+    def decrypt(self, data):
+        """解密数据"""
+        keystream = self._keystream(self.key)
+        decrypted = bytes([byte ^ next(keystream) for byte in data])
+        return decrypted
+
+
+class UserDataManager:
+    """用户数据管理类"""
+    
+    def __init__(self, password="gogoshine"):
+        self.cipher = RC4Cipher(password)
+        self.data_dir = "user_data"
+        self.session_file = os.path.join(self.data_dir, "user_session.dat")
+        
+        # 创建数据目录
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
+    
+    def save_user_data(self, fingerprint, cookies):
+        """加密保存用户数据"""
+        try:
+            # 组合用户数据
+            user_data = {
+                "fingerprint": fingerprint,
+                "cookies": cookies
+            }
+            
+            # 转换为JSON字符串
+            json_data = json.dumps(user_data, indent=2, ensure_ascii=False)
+            
+            # 加密数据
+            encrypted_data = self.cipher.encrypt(json_data)
+            
+            # 保存到文件
+            with open(self.session_file, 'wb') as f:
+                f.write(encrypted_data)
+            
+            print(f"用户数据已加密保存到 {self.session_file}")
+            return True
+        except Exception as e:
+            print(f"保存用户数据时出错: {e}")
+            return False
+    
+    def load_user_data(self):
+        """解密加载用户数据"""
+        if not os.path.exists(self.session_file):
+            print(f"用户数据文件 {self.session_file} 不存在")
+            return None, None
+        
+        try:
+            # 读取加密数据
+            with open(self.session_file, 'rb') as f:
+                encrypted_data = f.read()
+            
+            # 解密数据
+            decrypted_data = self.cipher.decrypt(encrypted_data)
+            
+            # 转换为字符串并解析JSON
+            json_data = decrypted_data.decode('utf-8')
+            user_data = json.loads(json_data)
+            
+            print(f"从 {self.session_file} 解密加载了用户数据")
+            return user_data.get("fingerprint"), user_data.get("cookies")
+        except Exception as e:
+            print(f"加载用户数据时出错: {e}")
+            return None, None
 
 
 def generate_random_fingerprint():
@@ -52,7 +152,9 @@ def generate_random_fingerprint():
     
     # 随机屏幕分辨率
     resolutions = [
-        (1920, 1080)
+        (1920, 1080), (1366, 768), (1536, 864), (1440, 900),
+        (1600, 900), (2560, 1440), (3840, 2160), (1280, 720),
+        (1680, 1050), (1280, 1024), (1920, 1200), (1024, 768)
     ]
     width, height = random.choice(resolutions)
     
@@ -80,14 +182,27 @@ def generate_random_fingerprint():
     }
 
 
-async def baidu_search():
+async def doubao_image_generation():
+    """访问豆包网站，支持用户手动登录并保存所有用户痕迹"""
+    # 初始化用户数据管理器
+    user_manager = UserDataManager()
+    
     async with async_playwright() as p:
         # 启动浏览器（默认使用Chromium，headless=False表示显示浏览器界面）
         browser = await p.chromium.launch(headless=False)
         
-        # 生成随机浏览器指纹信息
-        fingerprint = generate_random_fingerprint()
-        print(f"使用随机指纹信息:")
+        # 加载已保存的用户数据
+        fingerprint, saved_cookies = user_manager.load_user_data()
+        
+        # 如果没有已保存的指纹信息，生成新的指纹
+        if fingerprint is None:
+            print("首次使用，正在生成随机浏览器指纹信息...")
+            fingerprint = generate_random_fingerprint()
+        else:
+            print("加载已保存的浏览器指纹信息")
+        
+        # 显示当前使用的指纹信息
+        print("使用浏览器指纹信息:")
         print(f"  操作系统: {fingerprint['os']}")
         print(f"  User-Agent: {fingerprint['user_agent']}")
         print(f"  屏幕分辨率: {fingerprint['viewport']['width']}x{fingerprint['viewport']['height']}")
@@ -97,73 +212,94 @@ async def baidu_search():
         print(f"  语言: {fingerprint['locale']}")
         print(f"  时区: {fingerprint['timezone_id']}")
         
-        # 创建带有随机指纹信息的浏览器上下文
+        # 创建带有指纹信息的浏览器上下文，不指定viewport以允许窗口最大化
         context = await browser.new_context(
             user_agent=fingerprint['user_agent'],
-            viewport=fingerprint['viewport'],
             device_scale_factor=fingerprint['device_scale_factor'],
             is_mobile=fingerprint['is_mobile'],
             has_touch=fingerprint['has_touch'],
             locale=fingerprint['locale'],
             timezone_id=fingerprint['timezone_id']
         )
+        
+        # 如果有已保存的cookies，则加载
+        if saved_cookies:
+            await context.add_cookies(saved_cookies)
+            print("已加载保存的用户登录信息")
+        else:
+            print("未找到已保存的用户登录信息")
+        
         page = await context.new_page()
         
         try:
-            # 导航到百度首页
-            await page.goto('https://www.baidu.com')
+            # 导航到豆包网站
+            print("正在访问豆包网站...")
+            await page.goto('https://www.doubao.com/chat/')
             
             # 等待页面加载完成
             await page.wait_for_load_state('networkidle')
             
-            # 添加调试信息，查看当前URL和页面标题
+            # 最大化浏览器窗口
+            await page.evaluate('''() => {
+                if (document.documentElement.requestFullscreen) {
+                    document.documentElement.requestFullscreen();
+                } else if (document.documentElement.mozRequestFullScreen) {
+                    document.documentElement.mozRequestFullScreen();
+                } else if (document.documentElement.webkitRequestFullscreen) {
+                    document.documentElement.webkitRequestFullscreen();
+                } else if (document.documentElement.msRequestFullscreen) {
+                    document.documentElement.msRequestFullscreen();
+                }
+            }''')
+            
+            # 或者使用更简单的方式最大化窗口
+            # await page.set_viewport_size({"width": page.viewport_size["width"], "height": page.viewport_size["height"]})
+            
+            # 显示当前页面信息
             print(f"当前URL: {page.url}")
             print(f"页面标题: {await page.title()}")
             
-            # 定位搜索框并输入关键词
-            print("尝试定位搜索框...")
-            search_box = await page.query_selector('#kw')
-            if search_box:
-                print("搜索框定位成功")
-                await search_box.type('Playwright自动化测试')
-                # 尝试直接按Enter键搜索，避免点击按钮
-                await search_box.press('Enter')
-                print("已按Enter键提交搜索")
-            else:
-                print("搜索框定位失败，尝试使用其他选择器")
-                # 尝试使用其他选择器
-                search_box = await page.query_selector('[name="wd"]')
-                if search_box:
-                    print("使用备用选择器定位搜索框成功")
-                    await search_box.type('Playwright自动化测试')
-                    # 尝试直接按Enter键搜索
-                    await search_box.press('Enter')
-                    print("已按Enter键提交搜索")
-                else:
-                    print("无法定位搜索框")
-                    return
+            # 等待用户操作
+            print("请在浏览器中进行所需操作（如登录、生成图片等）...")
+            print("完成所有操作后，请手动关闭浏览器窗口，程序将自动保存所有用户痕迹")
             
-            # 等待搜索结果页面加载
-            await page.wait_for_load_state('networkidle')
-            await page.wait_for_timeout(2000)  # 等待2秒确保结果稳定
-            
-            # 保存结果页面截图
-            await page.screenshot(path='baidu_results.png')
-            print("搜索完成！已保存搜索结果页面截图")
+            # 一直等待用户关闭浏览器
+            try:
+                # 持续检查页面状态，直到浏览器被关闭
+                while True:
+                    try:
+                        # 尝试获取页面标题来检查页面是否仍然存在
+                        await page.title()
+                        # 页面仍然存在，继续等待
+                        await asyncio.sleep(5)  # 每5秒检查一次
+                    except:
+                        # 页面已关闭，跳出循环
+                        print("检测到浏览器已关闭")
+                        break
+            except Exception as e:
+                print(f"等待过程中出现异常: {e}")
             
         except Exception as e:
             print(f"执行过程中出现错误: {e}")
-            # 发生错误时也保存截图
-            try:
-                await page.screenshot(path='error_screenshot.png')
-                print("已保存错误页面截图")
-            except:
-                pass
         finally:
-            # 等待一会儿以便观察结果，然后关闭浏览器
-            await asyncio.sleep(3)
+            # 保存所有用户痕迹
+            print("正在保存用户痕迹...")
+            
+            try:
+                # 获取当前会话的cookies
+                current_cookies = await context.cookies()
+                
+                # 加密保存指纹信息和cookies
+                if user_manager.save_user_data(fingerprint, current_cookies):
+                    print("所有用户痕迹已加密保存，下次启动时将自动加载")
+                else:
+                    print("保存用户痕迹失败")
+            except Exception as e:
+                print(f"保存用户数据时出错: {e}")
+            
+            # 关闭浏览器
             await browser.close()
 
+
 if __name__ == "__main__":
-    # 运行异步函数
-    asyncio.run(baidu_search())
+    asyncio.run(doubao_image_generation())
